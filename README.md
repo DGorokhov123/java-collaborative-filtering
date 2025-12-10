@@ -1,110 +1,104 @@
-# My Area Guide
+# Recommend Me More
 
-My Area Guide is a web application for people who want to be in touch with 
-current events in their local areas.
+Рекомендательная система для Афиши локальных событий [My Area Guide](https://github.com/DGorokhov123/java-my-area-guide)
 
-People can view the list of events, make participation requests, get approvals or rejections, 
-leave comments.
+Для построения рекомендаций используется
+[item-based метод коллаборативной фильтрации](https://en.wikipedia.org/wiki/Item-item_collaborative_filtering).
+На основании данных о том, как пользователи взаимодействуют с разными событиями рассчитываются 
+коэффициенты подобия между событиями (Косинусное сходство). 
+Коэффициенты непрерывно корректируются по мере взаимодействия пользователей с системой и обновляются в базе данных.
+Затем, в реальном времени, по запросу, на основании этих данных рассчитываются рекомендации и рейтинги. 
 
-Event makers can start new events and manage participants lists
+### Последовательность действий:
+#### 1. Событие отправляется из клиента в Collector по gRPC 
+Для удобного взаимодействия с рекомендательной системой написан модуль `stats-client`, который интегрируется в
+основное приложение в качестве зависимости и предоставляет интерфейс `StatClient` с методами отправки событий и запроса 
+рекомендаций. При вызове методов отправки событий, клиент по gRPC обращается к сервису `Collector` и отправляет
+объект в формате `Protobuf` с информацией о взаимодействии.
 
-Administrators can manage events, users, categories and make compilations of events. 
-Also, they have statistics microservice to control important metrics. 
+#### 2. Событие отправляется из Collector в Kafka
+Сервис `Collector` принимает gRPC-запросы от инстансов-клиентов, перекодирует сообщения из формата `Protobuf`
+в формат `Avro` и отправляет их в топик Kafka `stats.user-actions` для дальнейшей обработки 
+сервисами `Aggregator` и `Analyzer`
 
-# Infrastructure modules (folder `/infra`)
+#### 3. Сервис Aggregator рассчитывает коэффициенты подобия и отправляет в Kafka
+Сервис `Aggregator` читает сообщения из топика `stats.user-actions` и обрабатывает их. Каждое новое взаимодействие 
+пользователя с событием может влиять на коэффициенты подобия этого события и других событий, с которыми ранее 
+взаимодействовал этот пользователь. Сервис `Aggregator` хранит в памяти таблицу весов и для каждого нового
+взаимодействия перерассчитывает все коэффициенты подобия, которые затрагивает данное взаимодействие.
+Новые коэффициенты подобия отправляются в топик Kafka `stats.events-similarity` для дальнейшей обработки сервисом
+`Analyzer`
 
-## Discovery Service
+#### 3. Сервис Analyzer читает топики Kafka и кладет данные в базу данных PostgreSQL
+Сервис `Analyzer` читает топики Kafka и складывает пришедшую информацию в базу данных: 
+- В таблице `actions` хранятся пользовательские взаимодействия с весами. 
+Эта таблица используется для поиска мероприятий, с которыми взаимодействовал конкретный пользователь.
+А также, для расчета рейтинга мероприятия как функции от весов взаимодействия с ним разных пользователей.
+- В таблице `simiralities` хранятся коэффициенты подобия между различными мероприятиями. Все коэффициенты, рассчитанные
+сервисом `Aggregator`, сохраняются в этой таблице и далее используются для составления рекомендаций.
 
-The module `discovery-server` implements Service Registry - the central part of 
-Service Discovery pattern. 
+#### 4. Основное приложение через клиент запрашивает рекомендации и рейтинги у сервиса Analyzer по gRPC
+Интерфейс `StatClient` модуля `stats-client` предоставляет 3 метода для запроса информации у сервиса `Analyzer`:
+- **GetRecommendationsForUser** - запрашивает N рекомендованных мероприятий для конкретного пользователя.
+Такая выборка может использоваться на главной странице, для того чтобы предложить пользователю наиболее подходящие 
+для него мероприятия.
+- **GetSimilarEvents** - запрашивает N мероприятий, похожих на заданное, с которыми пользователь еще не взаимодействовал.
+Такая выборка будет актуальна на странице конкретного мероприятия, с которым пользователь уже взаимодействовал
+и может предлагать похожие на него новые мероприятия.
+- **GetInteractionsCount** - запрашивает для списка мероприятий рейтинги на основании их весов взаимодействия с пользователями.
+Такая выборка будет полезна для ранжирования результатов поиска по популярности.
 
-Stack:
+# Инфраструктурные модули (папка `/infra`)
+
+Используются:
 - String Boot
-- Spring Cloud Eureka server 
-
-## Configuration Service
-
-The module `config-server` implements an External Configuration pattern as a central storage 
-of configuration files for all microservices except discovery.
-
-Stack:
-- String Boot
+- Spring Cloud Eureka server
 - Spring Cloud Config server
 
-## Gateway Service
+### Discovery Service
+Модуль `discovery-server` реализует Service Registry - центральный управляющий модуль, обеспечивающий взаимодействие 
+между микросервисами, load balancing, multi-instance, health-checks и т.д. 
 
-The module `gateway-server` implements an API Gateway pattern. It works as a single entry point
-for all microservices. 
+### Configuration Service
+Модуль `config-server` реализует паттерн External Configuration в качестве центрального хранилища конфигураций
+для всех микросервисов, кроме `discovery-server`.
 
-Stack:
-- String Boot
-- Spring Cloud Gateway server
+# Модули рекомендательной системы (папка `/stats`)
 
-# Application core modules (folder `/core`)
+Приложение построено на микросервисной архитектуре и содержит 3 сервиса, модуль клиента и 2 вспомогательных модуля с 
+классами Avro и Protobuf объектов.
+Взаимодействие между сервисами осуществляется через Kafka. Взаимодействие клиента с сервисами происходит по gRPC.
 
-The Microservice-based application contains 4 integrated services. They have separate databases 
-(implemented as different schemas in this release). The interaction is realized through Feign-clients with circuit breaker. 
-
-Stack:
+Используются:
 - Java ٩(◕‿◕｡)۶
 - String Boot
-- Spring MVC (REST)
+- Spring Kafka
+- Apache Avro + Apache Avro Maven Plugin
+- gRPC Spring Boot Starter (net.devh)
+- Protocol Buffers + GRPC Protobuf + Protobuf Maven Plugin
 - Spring Data JPA (Hibernate)
 - Spring Cloud Discovery and Configuration
-- OpenFeign client + Resilience4j
 - PostgreSQL
 
-## Common library
+### Сервис `Collector`
+Микросервис, осуществляющий прием данных из основного приложения (через клиент по gRPC) и отправку их в Kafka для
+дальнейшей обработки другими сервисами.
 
-The module `core-common` contains common classes and interfaces used by all core modules such as:
-- API description interfaces
-- Feign client interaction helpers
-- DTO
-- Exceptions and exception handlers
-- Validation custom annotations
+### Сервис `Aggregator`
+Микросервис, обрабатывающий входящие данные из Kafka и вычисляющий коэффициенты подобия, 
+которые также отправляются в Kafka для дальнейшей обработки и хранения.
 
-## User Management Service
+### Сервис `Analyzer`
+Микросервис, принимающий данные из Kafka и сохраняющий их в базу данных PostgreSQL. Также, на основании данных в БД,
+Analyzer вычисляет по запросу рекомендации и рейтинги. Эти рекомендации могут быть запрошены из основного приложения
+через клиент по gRPC в реальном времени.
 
-The module `user-service` provides Admin interface to manage users. It doesn't access other services
-but provides them information about users.
+### Модуль `stats-client`
+Содержит интерфейс `StatClient` с методами отправки событий и запроса рекомендаций, а также его реализацию.
+Данный модуль подключается в основное приложение как зависимость и использует gRPC для взаимодействия с сервисами 
+рекомендательной системы, которые он находит через Service Discovery.
 
-Public API Specification: [API-user-service-specification.json](API-user-service-specification.json)
+### Модули `avro-schemas` и `proto-schemas`
+Эти вспомогательные модули содержат спецификации типов данных и протоколов обмена информацией через Kafka и gRPC.
+Используется авто-генерация Java-классов. 
 
-Interaction API endpoints:
-- GET /admin/users/{userId}/short (returns UserShortDto to common interaction)
-- GET /admin/users/all/short (returns list of UserShortDto)
-- GET /admin/users/all/full (returns list of UserDto)
-
-## Event Management Service
-
-The module `event-service` provides Admin, Private and Public interface to operate events - the central 
-entity in application. The module interacts with request-service (to get information about requests number) 
-and user-service (to get extended user information)
-
-Public API Specification: [API-event-service-specification.json](API-event-service-specification.json)
-
-Interaction API endpoints:
-- GET /events/{id}/dto/interaction (returns shortened EventInteractionDto to common interaction)
-- GET /events/{id}/dto/comment (returns EventCommentDto for comment-service)
-- POST /events/dto/list/comment (returns list of EventCommentDto for comment-service)
-
-## Participation Requests Management Service
-
-The module `request-service` provides Private interface to operate participation requests. It interacts with
-event-service and user-service (to get extended info and check existence)
-
-Public API Specification: [API-request-service-specification.json](API-request-service-specification.json)
-
-Interaction API endpoints:
-- POST /requests/confirmed (returns map of confirmed requests by event ID list)
-
-## Event Comments Management Service
-
-The module `comment-service` provides Admin, Private and Public interface to operate comments to events.
-It interacts with event-service and user-service (to get extended info and check existence)
-
-Public API Specification: [API-comment-service-specification.json](API-comment-service-specification.json)
-
-# Author, with best wishes, 
-Dmitriy Gorokhov dg187@yandex.ru
-feat. Ivan Griko grikoivan@yandex.ru, Ahmed Kishev kishevahmed0@yandex.ru and Yandex Practucum team.
