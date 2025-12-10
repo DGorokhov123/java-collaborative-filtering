@@ -1,7 +1,8 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="AnalyzerApplication" type="Application" factoryName="Application" nameIsGenerated="true">
-    <option name="MAIN_CLASS_NAME" value="ru.practicum.AnalyzerApplication" />
+  <configuration default="false" name="AnalyzerApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot" nameIsGenerated="true">
+    <option name="FRAME_DEACTIVATION_UPDATE_POLICY" value="UnknownPolicyInFreeMode" />
     <module name="analyzer" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="ru.practicum.AnalyzerApplication" />
     <extension name="coverage">
       <pattern>
         <option name="PATTERN" value="ru.practicum.*" />
