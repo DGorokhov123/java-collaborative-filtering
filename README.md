@@ -51,7 +51,7 @@
 # Инфраструктурные модули (папка `/infra`)
 
 Используются:
-- String Boot
+- Spring Boot
 - Spring Cloud Eureka server
 - Spring Cloud Config server
 
@@ -71,7 +71,7 @@
 
 Используются:
 - Java ٩(◕‿◕｡)۶
-- String Boot
+- Spring Boot
 - Spring Kafka
 - Apache Avro + Apache Avro Maven Plugin
 - gRPC Spring Boot Starter (net.devh)
